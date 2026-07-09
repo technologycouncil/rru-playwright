@@ -1914,6 +1914,7 @@ async function crawlCourse(context, page, startUrl, courseIndex, totalCourses) {
   console.log('Downloads will be saved into numbered folders, one folder per activity/page title.');
   console.log('YouTube-wrapped Kaltura items will be recorded as YouTube links, not downloaded.');
   console.log('Only Tampermonkey-highlighted media.royalroads.ca images and csonline.royalroads.ca iframes will be downloaded.');
+  console.log('Only the filtered initial course queue will be crawled; links discovered later on activity pages are not enqueued.');
   console.log('HLS .m3u8 playlists will be skipped, not saved as successful video downloads.');
 
   let processed = 0;
@@ -2105,15 +2106,10 @@ async function crawlCourse(context, page, startUrl, courseIndex, totalCourses) {
         }
       }
 
-      const moreLinks = await collectCourseLinks(page);
-
-      for (const link of moreLinks) {
-        const key = canonicalPageKey(link);
-
-        if (!seenPageKeys.has(key) && !queue.some(existing => canonicalPageKey(existing) === key)) {
-          queue.push(link);
-        }
-      }
+      // Do not enqueue links discovered while processing activity pages. The initial
+      // course page's filtered queue is treated as the source of truth so navigation
+      // widgets, breadcrumbs, or related-course links cannot pull the crawl into
+      // another course after the run has started.
     } catch (error) {
       console.warn(`  Failed: ${error.message}`);
     }
