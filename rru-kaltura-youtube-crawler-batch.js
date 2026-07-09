@@ -2198,17 +2198,25 @@ async function crawlCourse(context, page, startUrl, courseIndex, totalCourses) {
       }
 
       const lessonSubpageLinks = await collectLessonSubpageLinks(page, page.url());
+      const newLessonSubpageLinks = [];
 
       for (const link of lessonSubpageLinks) {
         const key = canonicalPageKey(link);
 
         if (!seenPageKeys.has(key) && !queue.some(existing => canonicalPageKey(existing) === key)) {
-          queue.push(link);
+          newLessonSubpageLinks.push(link);
         }
       }
 
+      for (const link of newLessonSubpageLinks.slice().reverse()) {
+        queue.unshift(link);
+      }
+
       if (lessonSubpageLinks.length > 0) {
-        console.log(`  Same-lesson subpage links found: ${lessonSubpageLinks.length}`);
+        console.log(
+          `  Same-lesson subpage links found: ${lessonSubpageLinks.length}; ` +
+          `queued next: ${newLessonSubpageLinks.length}`
+        );
       }
 
       // Do not enqueue general links discovered while processing activity pages. Only
