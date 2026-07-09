@@ -7,3 +7,7 @@ node_modules/
 /playwright/.cache/
 /playwright/.auth/
 rru-browser-profile/
+rru-browser-profile/
+node_modules/
+.env
+*.log
