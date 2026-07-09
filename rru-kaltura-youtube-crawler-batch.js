@@ -558,6 +558,31 @@ function activityAllowedPattern(url) {
   );
 }
 
+function isLessonUrl(value) {
+  try {
+    return new URL(value).pathname.includes('/mod/lesson/view.php');
+  } catch {
+    return false;
+  }
+}
+
+function isSameLessonUrl(candidateValue, lessonValue) {
+  try {
+    const candidate = new URL(candidateValue);
+    const lesson = new URL(lessonValue);
+
+    return (
+      candidate.hostname === CONFIG.allowedHost &&
+      lesson.hostname === CONFIG.allowedHost &&
+      candidate.pathname === lesson.pathname &&
+      candidate.pathname.includes('/mod/lesson/view.php') &&
+      candidate.searchParams.get('id') === lesson.searchParams.get('id')
+    );
+  } catch {
+    return false;
+  }
+}
+
 function youtubeWatchUrl(videoId) {
   return videoId ? `https://www.youtube.com/watch?v=${videoId}` : '';
 }
@@ -1025,6 +1050,72 @@ async function collectCourseLinks(page) {
   for (const url of filtered) {
     const key = canonicalPageKey(url);
     if (!byKey.has(key)) byKey.set(key, url);
+  }
+
+  return [...byKey.values()];
+}
+
+async function collectLessonSubpageLinks(page, lessonUrl) {
+  if (!isLessonUrl(lessonUrl)) return [];
+
+  const links = await page.evaluate(() => {
+    function absoluteUrl(href) {
+      try { return new URL(href, location.href).href; } catch { return ''; }
+    }
+
+    const output = [];
+
+    for (const a of document.querySelectorAll('a[href]')) {
+      output.push(absoluteUrl(a.getAttribute('href')));
+    }
+
+    for (const form of document.querySelectorAll('form[action]')) {
+      const actionUrl = absoluteUrl(form.getAttribute('action'));
+      output.push(actionUrl);
+
+      try {
+        const url = new URL(actionUrl);
+        for (const input of form.querySelectorAll('input[name][value]')) {
+          url.searchParams.set(input.getAttribute('name'), input.getAttribute('value'));
+        }
+        output.push(url.href);
+      } catch {
+        // Ignore malformed form actions.
+      }
+    }
+
+    for (const button of document.querySelectorAll('button[formaction], input[formaction]')) {
+      output.push(absoluteUrl(button.getAttribute('formaction')));
+    }
+
+    for (const opt of document.querySelectorAll('select.urlselect option[value], #jump-to-activity option[value], option[value]')) {
+      const value = opt.getAttribute('value');
+      if (value) output.push(absoluteUrl(value));
+    }
+
+    for (const element of document.querySelectorAll('[data-url], [data-href], [data-link], [onclick]')) {
+      for (const attr of ['data-url', 'data-href', 'data-link']) {
+        const value = element.getAttribute(attr);
+        if (value) output.push(absoluteUrl(value));
+      }
+
+      const onclick = element.getAttribute('onclick') || '';
+      for (const match of onclick.matchAll(/https?:\/\/[^'" )]+|\/moodle\/mod\/lesson\/view\.php\?[^'" )]+/gi)) {
+        output.push(absoluteUrl(match[0]));
+      }
+    }
+
+    return output.filter(Boolean);
+  });
+
+  const byKey = new Map();
+
+  for (const link of links) {
+    if (shouldSkipCrawlUrl(link)) continue;
+    if (!isSameLessonUrl(link, lessonUrl)) continue;
+
+    const key = canonicalPageKey(link);
+    if (!byKey.has(key)) byKey.set(key, link);
   }
 
   return [...byKey.values()];
@@ -1914,7 +2005,7 @@ async function crawlCourse(context, page, startUrl, courseIndex, totalCourses) {
   console.log('Downloads will be saved into numbered folders, one folder per activity/page title.');
   console.log('YouTube-wrapped Kaltura items will be recorded as YouTube links, not downloaded.');
   console.log('Only Tampermonkey-highlighted media.royalroads.ca images and csonline.royalroads.ca iframes will be downloaded.');
-  console.log('Only the filtered initial course queue will be crawled; links discovered later on activity pages are not enqueued.');
+  console.log('Only the filtered initial course queue and same-lesson subpages discovered from lesson pages will be crawled.');
   console.log('HLS .m3u8 playlists will be skipped, not saved as successful video downloads.');
 
   let processed = 0;
@@ -2106,10 +2197,24 @@ async function crawlCourse(context, page, startUrl, courseIndex, totalCourses) {
         }
       }
 
-      // Do not enqueue links discovered while processing activity pages. The initial
-      // course page's filtered queue is treated as the source of truth so navigation
-      // widgets, breadcrumbs, or related-course links cannot pull the crawl into
-      // another course after the run has started.
+      const lessonSubpageLinks = await collectLessonSubpageLinks(page, page.url());
+
+      for (const link of lessonSubpageLinks) {
+        const key = canonicalPageKey(link);
+
+        if (!seenPageKeys.has(key) && !queue.some(existing => canonicalPageKey(existing) === key)) {
+          queue.push(link);
+        }
+      }
+
+      if (lessonSubpageLinks.length > 0) {
+        console.log(`  Same-lesson subpage links found: ${lessonSubpageLinks.length}`);
+      }
+
+      // Do not enqueue general links discovered while processing activity pages. Only
+      // same-lesson subpages are allowed through so Moodle lesson navigation can be
+      // exhausted without letting breadcrumbs, navigation widgets, or related-course
+      // links pull the crawl into another course.
     } catch (error) {
       console.warn(`  Failed: ${error.message}`);
     }
