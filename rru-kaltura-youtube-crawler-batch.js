@@ -16,7 +16,8 @@
 // Notes:
 // - This version checks Kaltura iframes for wrapped YouTube/external YouTube videos FIRST.
 // - Only if no YouTube link is found does it try direct Kaltura API/video downloads.
-// - Direct media.royalroads.ca and kaf.moodle.royalroads.ca flows are preserved.
+// - Only downloads assets that match the Tampermonkey highlighter rules:
+//   media.royalroads.ca images and csonline.royalroads.ca iframes.
 // - HLS .m3u8 playlist files are skipped and not saved as successful downloads.
 
 const { chromium } = require('playwright');
@@ -338,21 +339,18 @@ function isYoutubeIframeUrl(url) {
   );
 }
 
-function isWantedIframeUrl(url) {
+function isHighlightedIframeUrl(url) {
   if (!url) return false;
 
-  return (
-    url.includes(CONFIG.allowedHost) ||
-    url.includes(CONFIG.kalturaHost) ||
-    url.includes(CONFIG.kalturaApiHost) ||
-    url.includes(CONFIG.kalturaCap2Host) ||
-    url.includes('static.kaltura.com') ||
-    url.includes('filter/kaltura') ||
-    url.includes('/embedIframeJs/') ||
-    url.includes('entry_id=') ||
-    url.includes('entryId=') ||
-    isYoutubeIframeUrl(url)
-  );
+  try {
+    return new URL(url).hostname === CONFIG.allowedHost;
+  } catch {
+    return false;
+  }
+}
+
+function isWantedIframeUrl(url) {
+  return isHighlightedIframeUrl(url);
 }
 
 function isRoyalRoadsDownloadableUrl(urlValue) {
@@ -558,6 +556,31 @@ function activityAllowedPattern(url) {
     url.includes('/mod/choice/view.php') ||
     url.includes('/course/view.php')
   );
+}
+
+function isLessonUrl(value) {
+  try {
+    return new URL(value).pathname.includes('/mod/lesson/view.php');
+  } catch {
+    return false;
+  }
+}
+
+function isSameLessonUrl(candidateValue, lessonValue) {
+  try {
+    const candidate = new URL(candidateValue);
+    const lesson = new URL(lessonValue);
+
+    return (
+      candidate.hostname === CONFIG.allowedHost &&
+      lesson.hostname === CONFIG.allowedHost &&
+      candidate.pathname === lesson.pathname &&
+      candidate.pathname.includes('/mod/lesson/view.php') &&
+      candidate.searchParams.get('id') === lesson.searchParams.get('id')
+    );
+  } catch {
+    return false;
+  }
 }
 
 function youtubeWatchUrl(videoId) {
@@ -1032,6 +1055,72 @@ async function collectCourseLinks(page) {
   return [...byKey.values()];
 }
 
+async function collectLessonSubpageLinks(page, lessonUrl) {
+  if (!isLessonUrl(lessonUrl)) return [];
+
+  const links = await page.evaluate(() => {
+    function absoluteUrl(href) {
+      try { return new URL(href, location.href).href; } catch { return ''; }
+    }
+
+    const output = [];
+
+    for (const a of document.querySelectorAll('a[href]')) {
+      output.push(absoluteUrl(a.getAttribute('href')));
+    }
+
+    for (const form of document.querySelectorAll('form[action]')) {
+      const actionUrl = absoluteUrl(form.getAttribute('action'));
+      output.push(actionUrl);
+
+      try {
+        const url = new URL(actionUrl);
+        for (const input of form.querySelectorAll('input[name][value]')) {
+          url.searchParams.set(input.getAttribute('name'), input.getAttribute('value'));
+        }
+        output.push(url.href);
+      } catch {
+        // Ignore malformed form actions.
+      }
+    }
+
+    for (const button of document.querySelectorAll('button[formaction], input[formaction]')) {
+      output.push(absoluteUrl(button.getAttribute('formaction')));
+    }
+
+    for (const opt of document.querySelectorAll('select.urlselect option[value], #jump-to-activity option[value], option[value]')) {
+      const value = opt.getAttribute('value');
+      if (value) output.push(absoluteUrl(value));
+    }
+
+    for (const element of document.querySelectorAll('[data-url], [data-href], [data-link], [onclick]')) {
+      for (const attr of ['data-url', 'data-href', 'data-link']) {
+        const value = element.getAttribute(attr);
+        if (value) output.push(absoluteUrl(value));
+      }
+
+      const onclick = element.getAttribute('onclick') || '';
+      for (const match of onclick.matchAll(/https?:\/\/[^'" )]+|\/moodle\/mod\/lesson\/view\.php\?[^'" )]+/gi)) {
+        output.push(absoluteUrl(match[0]));
+      }
+    }
+
+    return output.filter(Boolean);
+  });
+
+  const byKey = new Map();
+
+  for (const link of links) {
+    if (shouldSkipCrawlUrl(link)) continue;
+    if (!isSameLessonUrl(link, lessonUrl)) continue;
+
+    const key = canonicalPageKey(link);
+    if (!byKey.has(key)) byKey.set(key, link);
+  }
+
+  return [...byKey.values()];
+}
+
 async function listAllSeenPageLinks(page, courseDir) {
   const allLinks = await page.evaluate(() => {
     function absoluteUrl(href) {
@@ -1138,7 +1227,7 @@ async function listAllSeenPageLinks(page, courseDir) {
 }
 
 async function collectIframesFromPage(page) {
-  return page.evaluate(() => {
+  return page.evaluate((iframeHost) => {
     function absoluteUrl(href) {
       try { return new URL(href, location.href).href; } catch { return ''; }
     }
@@ -1148,90 +1237,42 @@ async function collectIframesFromPage(page) {
         url: absoluteUrl(iframe.getAttribute('src')),
         alt: iframe.getAttribute('title') || iframe.getAttribute('aria-label') || iframe.getAttribute('id') || '',
       }))
-      .filter(item => item.url);
-  });
+      .filter(item => {
+        if (!item.url) return false;
+        try { return new URL(item.url).hostname === iframeHost; } catch { return false; }
+      });
+  }, CONFIG.allowedHost);
 }
 
 async function collectRoyalRoadsDownloadLinksFromPage(page) {
-  return page.evaluate(() => {
+  return page.evaluate((imageHost) => {
     function absoluteUrl(href) {
       try { return new URL(href, location.href).href; } catch { return ''; }
     }
 
     const urls = [];
 
-    const selectors = [
-      'a[href]',
-      'video[src]',
-      'audio[src]',
-      'source[src]',
-      'track[src]',
-      'img[src]',
-      'img[data-src]',
-      'img[data-original]',
-      'img[data-lazy-src]',
-      'img[srcset]',
-      'source[srcset]',
-      '[style*="background-image"]',
-    ];
+    for (const img of document.querySelectorAll('img[src]')) {
+      const raw = img.getAttribute('src');
+      const url = absoluteUrl(raw);
+      if (!url) continue;
 
-    for (const element of document.querySelectorAll(selectors.join(','))) {
-      const candidates = [];
-
-      const href = element.getAttribute('href');
-      const src = element.getAttribute('src');
-      const dataSrc = element.getAttribute('data-src');
-      const dataOriginal = element.getAttribute('data-original');
-      const dataLazySrc = element.getAttribute('data-lazy-src');
-      const srcset = element.getAttribute('srcset');
-      const style = element.getAttribute('style');
-
-      if (href) candidates.push(href);
-      if (src) candidates.push(src);
-      if (dataSrc) candidates.push(dataSrc);
-      if (dataOriginal) candidates.push(dataOriginal);
-      if (dataLazySrc) candidates.push(dataLazySrc);
-
-      if (srcset) {
-        for (const part of srcset.split(',')) {
-          const srcsetUrl = part.trim().split(/\s+/)[0];
-          if (srcsetUrl) candidates.push(srcsetUrl);
-        }
+      try {
+        if (new URL(url).hostname !== imageHost) continue;
+      } catch {
+        continue;
       }
 
-      if (style) {
-        const matches = [...style.matchAll(/url\((['"]?)(.*?)\1\)/gi)];
-        for (const match of matches) {
-          if (match[2]) candidates.push(match[2]);
-        }
-      }
-
-      const text =
-        element.textContent ||
-        element.getAttribute('title') ||
-        element.getAttribute('aria-label') ||
-        element.getAttribute('alt') ||
-        element.getAttribute('download') ||
+      const label =
+        img.getAttribute('alt') ||
+        img.getAttribute('title') ||
+        img.getAttribute('aria-label') ||
         '';
 
-      for (const raw of candidates) {
-        const url = absoluteUrl(raw);
-        if (!url) continue;
-
-        if (
-          !url.startsWith('https://csonline.royalroads.ca') &&
-          !url.startsWith('http://csonline.royalroads.ca') &&
-          !url.startsWith('https://media.royalroads.ca') &&
-          !url.startsWith('http://media.royalroads.ca')
-        ) {
-          continue;
-        }
-
-        urls.push({
-          url,
-          label: String(text || '').replace(/\s+/g, ' ').trim(),
-        });
-      }
+      urls.push({
+        url,
+        label: String(label || '').replace(/\s+/g, ' ').trim(),
+      });
     }
 
     const seen = new Set();
@@ -1241,7 +1282,7 @@ async function collectRoyalRoadsDownloadLinksFromPage(page) {
       seen.add(item.url);
       return true;
     });
-  });
+  }, CONFIG.mediaHost);
 }
 
 async function extractKalturaConfigFromPage(page) {
@@ -1963,6 +2004,8 @@ async function crawlCourse(context, page, startUrl, courseIndex, totalCourses) {
   console.log(`Max pages this course: ${CONFIG.maxPages}`);
   console.log('Downloads will be saved into numbered folders, one folder per activity/page title.');
   console.log('YouTube-wrapped Kaltura items will be recorded as YouTube links, not downloaded.');
+  console.log('Only Tampermonkey-highlighted media.royalroads.ca images and csonline.royalroads.ca iframes will be downloaded.');
+  console.log('Only the filtered initial course queue and same-lesson subpages discovered from lesson pages will be crawled.');
   console.log('HLS .m3u8 playlists will be skipped, not saved as successful video downloads.');
 
   let processed = 0;
@@ -2026,8 +2069,8 @@ async function crawlCourse(context, page, startUrl, courseIndex, totalCourses) {
       const downloadLinks = await collectRoyalRoadsDownloadLinksFromPage(page);
 
       console.log(`  Page/activity: ${activityFolder}`);
-      console.log(`  Iframes found: ${iframes.length}`);
-      console.log(`  Royal Roads download candidate links found: ${downloadLinks.length}`);
+      console.log(`  Highlighted csonline.royalroads.ca iframes found: ${iframes.length}`);
+      console.log(`  Highlighted media.royalroads.ca image candidates found: ${downloadLinks.length}`);
 
       for (const media of downloadLinks) {
         if (!isRoyalRoadsDownloadableUrl(media.url)) continue;
@@ -2154,15 +2197,24 @@ async function crawlCourse(context, page, startUrl, courseIndex, totalCourses) {
         }
       }
 
-      const moreLinks = await collectCourseLinks(page);
+      const lessonSubpageLinks = await collectLessonSubpageLinks(page, page.url());
 
-      for (const link of moreLinks) {
+      for (const link of lessonSubpageLinks) {
         const key = canonicalPageKey(link);
 
         if (!seenPageKeys.has(key) && !queue.some(existing => canonicalPageKey(existing) === key)) {
           queue.push(link);
         }
       }
+
+      if (lessonSubpageLinks.length > 0) {
+        console.log(`  Same-lesson subpage links found: ${lessonSubpageLinks.length}`);
+      }
+
+      // Do not enqueue general links discovered while processing activity pages. Only
+      // same-lesson subpages are allowed through so Moodle lesson navigation can be
+      // exhausted without letting breadcrumbs, navigation widgets, or related-course
+      // links pull the crawl into another course.
     } catch (error) {
       console.warn(`  Failed: ${error.message}`);
     }
