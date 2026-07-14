@@ -1303,7 +1303,26 @@ async function collectLessonSubpageLinks(page, lessonUrl) {
 
 async function collectBookSubpageLinks(page, bookUrl) {
   if (!isBookUrl(bookUrl)) return [];
-  return collectSameActivitySubpageLinks(page, bookUrl, isSameBookUrl, /https?:\/\/[^'" )]+|\/moodle\/mod\/book\/view\.php\?[^'" )]+/gi);
+
+  const links = await collectSameActivitySubpageLinks(page, bookUrl, isSameBookUrl, /https?:\/\/[^'" )]+|\/moodle\/mod\/book\/view\.php\?[^'" )]+/gi);
+
+  // Moodle book landing URLs without a chapterid render the first chapter's
+  // content. Do not queue that first chapter again, otherwise the same book
+  // page is saved once as the book landing page and again as chapter 1.
+  if (!hasBookChapterParam(bookUrl) && links.length > 0) {
+    return links.slice(1);
+  }
+
+  return links;
+}
+
+function hasBookChapterParam(pageUrl) {
+  try {
+    const url = new URL(pageUrl);
+    return url.pathname.includes('/mod/book/view.php') && url.searchParams.has('chapterid');
+  } catch {
+    return false;
+  }
 }
 
 async function collectSameActivitySubpageLinks(page, activityUrl, isSameActivityUrl, onclickUrlPattern) {
