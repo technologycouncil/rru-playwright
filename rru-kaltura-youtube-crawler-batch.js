@@ -1367,19 +1367,11 @@ async function collectRoyalRoadsDownloadLinksFromPage(page) {
       }
     }
 
-    function hasHost(url, allowedHosts) {
-      try { return allowedHosts.includes(new URL(url).hostname); } catch { return false; }
-    }
-
     const urls = [];
     const allowedHosts = new Set(hosts);
 
     function hasAllowedHost(url) {
       try { return allowedHosts.has(new URL(url).hostname); } catch { return false; }
-    }
-
-    function cleanText(value) {
-      return String(value || '').replace(/\s+/g, ' ').trim();
     }
 
     for (const img of document.querySelectorAll('img[src]')) {
@@ -1393,26 +1385,6 @@ async function collectRoyalRoadsDownloadLinksFromPage(page) {
         img.getAttribute('alt') ||
         img.getAttribute('title') ||
         img.getAttribute('aria-label') ||
-        pathFromUrl(url) ||
-        '';
-
-      urls.push({
-        url,
-        label: cleanText(label),
-        source: 'img[src]',
-      });
-    }
-
-    for (const link of document.querySelectorAll('a[href]')) {
-      const raw = link.getAttribute('href');
-      const url = absoluteUrl(raw);
-      if (!url) continue;
-      if (!hasHost(url, hyperlinkHosts)) continue;
-
-      const label =
-        cleanText(link.textContent) ||
-        link.getAttribute('title') ||
-        link.getAttribute('aria-label') ||
         pathFromUrl(url) ||
         '';
 
@@ -1441,10 +1413,6 @@ async function collectRoyalRoadsDownloadLinksFromPage(page) {
         label: cleanText(label),
         source: 'a[href]',
       });
-    }
-
-    function pathFromUrl(value) {
-      try { return decodeURIComponent(new URL(value).pathname.split('/').filter(Boolean).pop() || ''); } catch { return ''; }
     }
 
     const seen = new Set();
