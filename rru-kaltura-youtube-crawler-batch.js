@@ -1350,7 +1350,7 @@ async function collectIframesFromPage(page) {
 }
 
 async function collectRoyalRoadsDownloadLinksFromPage(page) {
-  return page.evaluate(({ imageHost, hyperlinkHosts }) => {
+  return page.evaluate((hosts) => {
     function absoluteUrl(href) {
       try { return new URL(href, location.href).href; } catch { return ''; }
     }
@@ -1372,12 +1372,22 @@ async function collectRoyalRoadsDownloadLinksFromPage(page) {
     }
 
     const urls = [];
+    const allowedHosts = new Set(hosts);
+
+    function hasAllowedHost(url) {
+      try { return allowedHosts.has(new URL(url).hostname); } catch { return false; }
+    }
+
+    function cleanText(value) {
+      return String(value || '').replace(/\s+/g, ' ').trim();
+    }
 
     for (const img of document.querySelectorAll('img[src]')) {
       const raw = img.getAttribute('src');
       const url = absoluteUrl(raw);
       if (!url) continue;
-      if (!hasHost(url, [imageHost])) continue;
+
+      if (!hasAllowedHost(url)) continue;
 
       const label =
         img.getAttribute('alt') ||
@@ -1409,21 +1419,43 @@ async function collectRoyalRoadsDownloadLinksFromPage(page) {
       urls.push({
         url,
         label: cleanText(label),
+        source: 'img[src]',
+      });
+    }
+
+    for (const link of document.querySelectorAll('a[href]')) {
+      const raw = link.getAttribute('href');
+      const url = absoluteUrl(raw);
+      if (!url) continue;
+      if (!hasAllowedHost(url)) continue;
+
+      const label =
+        cleanText(link.textContent) ||
+        link.getAttribute('title') ||
+        link.getAttribute('aria-label') ||
+        pathFromUrl(url) ||
+        '';
+
+      urls.push({
+        url,
+        label: cleanText(label),
         source: 'a[href]',
       });
+    }
+
+    function pathFromUrl(value) {
+      try { return decodeURIComponent(new URL(value).pathname.split('/').filter(Boolean).pop() || ''); } catch { return ''; }
     }
 
     const seen = new Set();
 
     return urls.filter(item => {
-      if (seen.has(item.url)) return false;
-      seen.add(item.url);
+      const key = `${item.source}|${item.url}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
       return true;
     });
-  }, {
-    imageHost: CONFIG.mediaHost,
-    hyperlinkHosts: [CONFIG.allowedHost, CONFIG.mediaHost],
-  });
+  }, [CONFIG.mediaHost, CONFIG.allowedHost]);
 }
 
 async function extractKalturaConfigFromPage(page) {
