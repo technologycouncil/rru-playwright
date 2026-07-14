@@ -16,8 +16,10 @@
 // Notes:
 // - This version checks Kaltura iframes for wrapped YouTube/external YouTube videos FIRST.
 // - Only if no YouTube link is found does it try direct Kaltura API/video downloads.
-// - Only downloads assets that match the Tampermonkey highlighter rules:
+// - Downloads assets that match the Tampermonkey highlighter rules:
 //   media.royalroads.ca images and csonline.royalroads.ca iframes.
+// - Also checks hyperlinks and downloads files linked from csonline.royalroads.ca
+//   or media.royalroads.ca into the corresponding page folder.
 // - HLS .m3u8 playlist files are skipped and not saved as successful downloads.
 
 const { chromium } = require('playwright');
@@ -1348,9 +1350,25 @@ async function collectIframesFromPage(page) {
 }
 
 async function collectRoyalRoadsDownloadLinksFromPage(page) {
-  return page.evaluate((imageHost) => {
+  return page.evaluate(({ imageHost, hyperlinkHosts }) => {
     function absoluteUrl(href) {
       try { return new URL(href, location.href).href; } catch { return ''; }
+    }
+
+    function cleanText(value) {
+      return String(value || '').replace(/\s+/g, ' ').trim();
+    }
+
+    function pathFromUrl(value) {
+      try {
+        return decodeURIComponent(new URL(value).pathname.split('/').filter(Boolean).pop() || '');
+      } catch {
+        return '';
+      }
+    }
+
+    function hasHost(url, allowedHosts) {
+      try { return allowedHosts.includes(new URL(url).hostname); } catch { return false; }
     }
 
     const urls = [];
@@ -1359,22 +1377,39 @@ async function collectRoyalRoadsDownloadLinksFromPage(page) {
       const raw = img.getAttribute('src');
       const url = absoluteUrl(raw);
       if (!url) continue;
-
-      try {
-        if (new URL(url).hostname !== imageHost) continue;
-      } catch {
-        continue;
-      }
+      if (!hasHost(url, [imageHost])) continue;
 
       const label =
         img.getAttribute('alt') ||
         img.getAttribute('title') ||
         img.getAttribute('aria-label') ||
+        pathFromUrl(url) ||
         '';
 
       urls.push({
         url,
-        label: String(label || '').replace(/\s+/g, ' ').trim(),
+        label: cleanText(label),
+        source: 'img[src]',
+      });
+    }
+
+    for (const link of document.querySelectorAll('a[href]')) {
+      const raw = link.getAttribute('href');
+      const url = absoluteUrl(raw);
+      if (!url) continue;
+      if (!hasHost(url, hyperlinkHosts)) continue;
+
+      const label =
+        cleanText(link.textContent) ||
+        link.getAttribute('title') ||
+        link.getAttribute('aria-label') ||
+        pathFromUrl(url) ||
+        '';
+
+      urls.push({
+        url,
+        label: cleanText(label),
+        source: 'a[href]',
       });
     }
 
@@ -1385,7 +1420,10 @@ async function collectRoyalRoadsDownloadLinksFromPage(page) {
       seen.add(item.url);
       return true;
     });
-  }, CONFIG.mediaHost);
+  }, {
+    imageHost: CONFIG.mediaHost,
+    hyperlinkHosts: [CONFIG.allowedHost, CONFIG.mediaHost],
+  });
 }
 
 async function extractKalturaConfigFromPage(page) {
@@ -2107,7 +2145,7 @@ async function crawlCourse(context, page, startUrl, courseIndex, totalCourses) {
   console.log(`Max pages this course: ${CONFIG.maxPages}`);
   console.log('Downloads will be saved into numbered folders, one folder per activity/page title.');
   console.log('YouTube-wrapped Kaltura items will be recorded as YouTube links, not downloaded.');
-  console.log('Only Tampermonkey-highlighted media.royalroads.ca images and csonline.royalroads.ca iframes will be downloaded.');
+  console.log('Tampermonkey-highlighted media.royalroads.ca images, csonline.royalroads.ca iframes, and hyperlinks to csonline.royalroads.ca or media.royalroads.ca files will be downloaded.');
   console.log('Only the filtered initial course queue and same-lesson subpages discovered from lesson pages will be crawled.');
   console.log('HLS .m3u8 playlists will be skipped, not saved as successful video downloads.');
 
@@ -2176,7 +2214,7 @@ async function crawlCourse(context, page, startUrl, courseIndex, totalCourses) {
 
       console.log(`  Page/activity: ${activityFolder}`);
       console.log(`  Highlighted csonline.royalroads.ca iframes found: ${iframes.length}`);
-      console.log(`  Highlighted media.royalroads.ca image candidates found: ${downloadLinks.length}`);
+      console.log(`  Royal Roads image/link download candidates found: ${downloadLinks.length}`);
 
       for (const media of downloadLinks) {
         if (!isRoyalRoadsDownloadableUrl(media.url)) continue;
@@ -2214,7 +2252,7 @@ async function crawlCourse(context, page, startUrl, courseIndex, totalCourses) {
 
         if (shouldRecordDownloadResult(downloadResult)) {
           addResult({
-            type: isVideoUrl(media.url) || isLikelyVideoFilename(downloadResult.downloadedFile) ? 'direct_video' : 'direct_media',
+            type: isVideoUrl(media.url) || isLikelyVideoFilename(downloadResult.downloadedFile) ? 'direct_video' : (media.source === 'a[href]' ? 'direct_link' : 'direct_media'),
             url: media.url,
             downloadedFile: downloadResult.downloadedFile,
             downloadedPath: downloadResult.downloadedPath,
