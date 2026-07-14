@@ -1298,7 +1298,12 @@ function activitySubpageSortParts(value) {
 
 async function collectLessonSubpageLinks(page, lessonUrl) {
   if (!isLessonUrl(lessonUrl)) return [];
-  return collectSameActivitySubpageLinks(page, lessonUrl, isSameLessonUrl, /https?:\/\/[^'" )]+|\/moodle\/mod\/lesson\/view\.php\?[^'" )]+/gi);
+
+  const links = await collectSameActivitySubpageLinks(page, lessonUrl, isSameLessonUrl, /https?:\/\/[^'" )]+|\/moodle\/mod\/lesson\/view\.php\?[^'" )]+/gi);
+
+  // Moodle lesson subpages should be processed in their pageid order so the
+  // numbered folders under the lesson folder match the stable lesson URL order.
+  return links.sort(compareActivitySubpageLinks);
 }
 
 async function collectBookSubpageLinks(page, bookUrl) {
@@ -1389,9 +1394,8 @@ async function collectSameActivitySubpageLinks(page, activityUrl, isSameActivity
     if (!byKey.has(key)) byKey.set(key, link);
   }
 
-  // Preserve the order Moodle exposes in the page DOM/navigation. Lesson page IDs
-  // are not guaranteed to be sequential in reading order, so sorting by pageid can
-  // place a single late-created/edited lesson subpage out of order.
+  // Preserve the order Moodle exposes in the page DOM/navigation by default.
+  // Callers can apply activity-specific sorting when they need stable numbering.
   return [...byKey.values()];
 }
 
