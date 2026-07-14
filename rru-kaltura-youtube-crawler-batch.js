@@ -260,11 +260,31 @@ function numberedActivityFolderFromPage(pageTitle, pageUrl) {
   return activityFolderNumbers.get(key);
 }
 
+function lessonScopedFolderFromPage(pageTitle, pageUrl) {
+  if (!isLessonUrl(pageUrl)) return '';
+
+  const parts = cleanText(pageTitle)
+    .split('/')
+    .map(p => p.trim())
+    .filter(Boolean);
+
+  if (parts.length < 2) return '';
+
+  const lessonName = parts[parts.length - 2];
+  const pageName = parts[parts.length - 1];
+
+  if (!lessonName || !pageName || lessonName === pageName) return '';
+
+  return sanitizeFolderName(lessonName, 'lesson');
+}
+
 function activityScopedDir(courseDir, pageTitle, pageUrl) {
   const folder = numberedActivityFolderFromPage(pageTitle, pageUrl);
-  const dir = path.join(courseDir, folder);
+  const lessonFolder = lessonScopedFolderFromPage(pageTitle, pageUrl);
+  const relativeFolder = lessonFolder ? path.join(lessonFolder, folder) : folder;
+  const dir = path.join(courseDir, relativeFolder);
   fs.mkdirSync(dir, { recursive: true });
-  return { dir, folder };
+  return { dir, folder: relativeFolder };
 }
 
 function getUrlExtension(urlValue) {
@@ -1058,6 +1078,8 @@ async function collectCourseLinks(page) {
 async function collectLessonSubpageLinks(page, lessonUrl) {
   if (!isLessonUrl(lessonUrl)) return [];
 
+  const currentPageKey = canonicalPageKey(lessonUrl);
+
   const links = await page.evaluate(() => {
     function absoluteUrl(href) {
       try { return new URL(href, location.href).href; } catch { return ''; }
@@ -1115,6 +1137,7 @@ async function collectLessonSubpageLinks(page, lessonUrl) {
     if (!isSameLessonUrl(link, lessonUrl)) continue;
 
     const key = canonicalPageKey(link);
+    if (key === currentPageKey) continue;
     if (!byKey.has(key)) byKey.set(key, link);
   }
 
@@ -2062,6 +2085,9 @@ async function crawlCourse(context, page, startUrl, courseIndex, totalCourses) {
       }
 
       await page.waitForTimeout(CONFIG.crawlDelayMs);
+
+      const currentPageKey = canonicalPageKey(page.url());
+      seenPageKeys.add(currentPageKey);
 
       const pageTitle = await getPagePath(page);
       const activityFolder = activityFolderBaseFromPage(pageTitle, page.url());
