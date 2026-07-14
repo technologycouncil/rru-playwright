@@ -336,17 +336,35 @@ function lessonActivityScopedDir(courseDir, pageTitle, pageUrl) {
   return { dir, folder: relativeFolder };
 }
 
+function lessonScopedFolderFromPage(pageTitle, pageUrl) {
+  if (!isLessonUrl(pageUrl)) return '';
+
+  const parts = cleanText(pageTitle)
+    .split('/')
+    .map(p => p.trim())
+    .filter(Boolean);
+
+  if (parts.length < 2) return '';
+
+  const lessonName = parts[parts.length - 2];
+  const pageName = parts[parts.length - 1];
+
+  if (!lessonName || !pageName || lessonName === pageName) return '';
+
+  return sanitizeFolderName(lessonName, 'lesson');
+}
+
 function activityScopedDir(courseDir, pageTitle, pageUrl) {
   if (isLessonUrl(pageUrl)) {
     return lessonActivityScopedDir(courseDir, pageTitle, pageUrl);
   }
 
   const folder = numberedActivityFolderFromPage(pageTitle, pageUrl);
-  const dir = path.join(courseDir, folder);
-
+  const lessonFolder = lessonScopedFolderFromPage(pageTitle, pageUrl);
+  const relativeFolder = lessonFolder ? path.join(lessonFolder, folder) : folder;
+  const dir = path.join(courseDir, relativeFolder);
   fs.mkdirSync(dir, { recursive: true });
-
-  return { dir, folder };
+  return { dir, folder: relativeFolder };
 }
 
 function getUrlExtension(urlValue) {
