@@ -315,9 +315,19 @@ function activityParentFolderBaseFromPage(pageTitle, pageUrl, isActivityUrl, fal
   if (!isActivityUrl(pageUrl)) return '';
 
   const parts = lessonTitlePartsFromPage(pageTitle);
-  const activityName = parts.length >= 2 ? parts[parts.length - 2] : parts[parts.length - 1];
+  const isSubpage = hasActivitySubpageParam(pageUrl);
+  const activityName = isSubpage && parts.length >= 2 ? parts[parts.length - 2] : parts[parts.length - 1];
 
   return sanitizeFolderName(activityName || activityFolderBaseFromPage(pageTitle, pageUrl), fallback);
+}
+
+function hasActivitySubpageParam(pageUrl) {
+  try {
+    const url = new URL(pageUrl);
+    return url.searchParams.has('pageid') || url.searchParams.has('chapterid');
+  } catch {
+    return false;
+  }
 }
 
 function lessonSubpageFolderBaseFromPage(pageTitle, pageUrl) {
@@ -1257,6 +1267,35 @@ async function collectCourseLinks(page) {
   return [...byKey.values()];
 }
 
+function compareActivitySubpageLinks(a, b) {
+  const aSort = activitySubpageSortParts(a);
+  const bSort = activitySubpageSortParts(b);
+
+  if (aSort.activityId !== bSort.activityId) return aSort.activityId.localeCompare(bSort.activityId);
+  if (aSort.kind !== bSort.kind) return aSort.kind.localeCompare(bSort.kind);
+  if (aSort.subpageNumber !== bSort.subpageNumber) return aSort.subpageNumber - bSort.subpageNumber;
+  return aSort.url.localeCompare(bSort.url);
+}
+
+function activitySubpageSortParts(value) {
+  try {
+    const url = new URL(value);
+    const pageid = Number(url.searchParams.get('pageid'));
+    const chapterid = Number(url.searchParams.get('chapterid'));
+    const hasPageid = Number.isFinite(pageid) && pageid > 0;
+    const hasChapterid = Number.isFinite(chapterid) && chapterid > 0;
+
+    return {
+      activityId: url.searchParams.get('id') || '',
+      kind: hasPageid ? 'pageid' : hasChapterid ? 'chapterid' : '',
+      subpageNumber: hasPageid ? pageid : hasChapterid ? chapterid : Number.MAX_SAFE_INTEGER,
+      url: url.href,
+    };
+  } catch {
+    return { activityId: '', kind: '', subpageNumber: Number.MAX_SAFE_INTEGER, url: String(value || '') };
+  }
+}
+
 async function collectLessonSubpageLinks(page, lessonUrl) {
   if (!isLessonUrl(lessonUrl)) return [];
   return collectSameActivitySubpageLinks(page, lessonUrl, isSameLessonUrl, /https?:\/\/[^'" )]+|\/moodle\/mod\/lesson\/view\.php\?[^'" )]+/gi);
@@ -1331,7 +1370,7 @@ async function collectSameActivitySubpageLinks(page, activityUrl, isSameActivity
     if (!byKey.has(key)) byKey.set(key, link);
   }
 
-  return [...byKey.values()];
+  return [...byKey.values()].sort(compareActivitySubpageLinks);
 }
 
 async function listAllSeenPageLinks(page, courseDir) {
