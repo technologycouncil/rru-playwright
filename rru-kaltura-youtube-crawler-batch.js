@@ -1389,7 +1389,10 @@ async function collectSameActivitySubpageLinks(page, activityUrl, isSameActivity
     if (!byKey.has(key)) byKey.set(key, link);
   }
 
-  return [...byKey.values()].sort(compareActivitySubpageLinks);
+  // Preserve the order Moodle exposes in the page DOM/navigation. Lesson page IDs
+  // are not guaranteed to be sequential in reading order, so sorting by pageid can
+  // place a single late-created/edited lesson subpage out of order.
+  return [...byKey.values()];
 }
 
 async function listAllSeenPageLinks(page, courseDir) {
