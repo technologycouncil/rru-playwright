@@ -75,6 +75,7 @@ let seenDownloadUrls = new Set();
 let activityFolderNumbers = new Map();
 let nextActivityFolderNumber = 1;
 let lessonSubpageFolderNumbers = new Map();
+let bookSubpageFolderNumbers = new Map();
 let CURRENT_START_COURSE_ID = '';
 
 const VIDEO_EXTENSIONS = new Set([
@@ -102,6 +103,7 @@ function resetCourseState(startUrl) {
   activityFolderNumbers = new Map();
   nextActivityFolderNumber = 1;
   lessonSubpageFolderNumbers = new Map();
+  bookSubpageFolderNumbers = new Map();
   CURRENT_START_COURSE_ID = getCourseIdFromUrl(startUrl);
 }
 
@@ -269,6 +271,14 @@ function numberedActivityFolderFromPage(pageTitle, pageUrl) {
 }
 
 function lessonKeyFromUrl(pageUrl) {
+  return activityKeyFromUrl(pageUrl, 'lesson');
+}
+
+function bookKeyFromUrl(pageUrl) {
+  return activityKeyFromUrl(pageUrl, 'book');
+}
+
+function activityKeyFromUrl(pageUrl, fallbackPrefix) {
   try {
     const url = new URL(pageUrl);
     const id = url.searchParams.get('id');
@@ -277,7 +287,7 @@ function lessonKeyFromUrl(pageUrl) {
     // Fall through to the raw URL fallback.
   }
 
-  return `lesson|${pageUrl}`;
+  return `${fallbackPrefix}|${pageUrl}`;
 }
 
 function lessonTitlePartsFromPage(pageTitle) {
@@ -288,49 +298,97 @@ function lessonTitlePartsFromPage(pageTitle) {
 }
 
 function lessonFolderBaseFromPage(pageTitle, pageUrl) {
-  if (!isLessonUrl(pageUrl)) return '';
+  return activityParentFolderBaseFromPage(pageTitle, pageUrl, isLessonUrl, 'lesson');
+}
+
+function bookFolderBaseFromPage(pageTitle, pageUrl) {
+  return activityParentFolderBaseFromPage(pageTitle, pageUrl, isBookUrl, 'book');
+}
+
+function activityParentFolderBaseFromPage(pageTitle, pageUrl, isActivityUrl, fallback) {
+  if (!isActivityUrl(pageUrl)) return '';
 
   const parts = lessonTitlePartsFromPage(pageTitle);
-  const lessonName = parts.length >= 2 ? parts[parts.length - 2] : parts[parts.length - 1];
+  const activityName = parts.length >= 2 ? parts[parts.length - 2] : parts[parts.length - 1];
 
-  return sanitizeFolderName(lessonName || activityFolderBaseFromPage(pageTitle, pageUrl), 'lesson');
+  return sanitizeFolderName(activityName || activityFolderBaseFromPage(pageTitle, pageUrl), fallback);
 }
 
 function lessonSubpageFolderBaseFromPage(pageTitle, pageUrl) {
+  return activitySubpageFolderBaseFromPage(pageTitle, pageUrl, 'lesson-page');
+}
+
+function bookSubpageFolderBaseFromPage(pageTitle, pageUrl) {
+  return activitySubpageFolderBaseFromPage(pageTitle, pageUrl, 'book-page');
+}
+
+function activitySubpageFolderBaseFromPage(pageTitle, pageUrl, fallback) {
   const parts = lessonTitlePartsFromPage(pageTitle);
   const pageName = parts[parts.length - 1];
 
-  return sanitizeFolderName(pageName || activityFolderBaseFromPage(pageTitle, pageUrl), 'lesson-page');
+  return sanitizeFolderName(pageName || activityFolderBaseFromPage(pageTitle, pageUrl), fallback);
 }
 
 function numberedLessonSubpageFolderFromPage(pageTitle, pageUrl) {
-  const lessonKey = lessonKeyFromUrl(pageUrl);
-  const subpageKey = canonicalPageKey(pageUrl);
-  const baseFolder = lessonSubpageFolderBaseFromPage(pageTitle, pageUrl);
+  return numberedActivitySubpageFolderFromPage(
+    lessonSubpageFolderNumbers,
+    lessonKeyFromUrl(pageUrl),
+    pageUrl,
+    lessonSubpageFolderBaseFromPage(pageTitle, pageUrl)
+  );
+}
 
-  if (!lessonSubpageFolderNumbers.has(lessonKey)) {
-    lessonSubpageFolderNumbers.set(lessonKey, {
+function numberedBookSubpageFolderFromPage(pageTitle, pageUrl) {
+  return numberedActivitySubpageFolderFromPage(
+    bookSubpageFolderNumbers,
+    bookKeyFromUrl(pageUrl),
+    pageUrl,
+    bookSubpageFolderBaseFromPage(pageTitle, pageUrl)
+  );
+}
+
+function numberedActivitySubpageFolderFromPage(folderNumbers, activityKey, pageUrl, baseFolder) {
+  const subpageKey = canonicalPageKey(pageUrl);
+
+  if (!folderNumbers.has(activityKey)) {
+    folderNumbers.set(activityKey, {
       nextNumber: 1,
       folders: new Map(),
     });
   }
 
-  const lessonFolders = lessonSubpageFolderNumbers.get(lessonKey);
+  const activityFolders = folderNumbers.get(activityKey);
 
-  if (!lessonFolders.folders.has(subpageKey)) {
-    const number = String(lessonFolders.nextNumber).padStart(3, '0');
-    lessonFolders.folders.set(subpageKey, `${number} - ${baseFolder}`);
-    lessonFolders.nextNumber += 1;
+  if (!activityFolders.folders.has(subpageKey)) {
+    const number = String(activityFolders.nextNumber).padStart(3, '0');
+    activityFolders.folders.set(subpageKey, `${number} - ${baseFolder}`);
+    activityFolders.nextNumber += 1;
   }
 
-  return lessonFolders.folders.get(subpageKey);
+  return activityFolders.folders.get(subpageKey);
 }
 
 function lessonActivityScopedDir(courseDir, pageTitle, pageUrl) {
-  const lessonKey = lessonKeyFromUrl(pageUrl);
-  const lessonFolder = numberedRootFolder(lessonKey, lessonFolderBaseFromPage(pageTitle, pageUrl));
-  const subpageFolder = numberedLessonSubpageFolderFromPage(pageTitle, pageUrl);
-  const relativeFolder = path.join(lessonFolder, subpageFolder);
+  return subpageActivityScopedDir(
+    courseDir,
+    lessonKeyFromUrl(pageUrl),
+    lessonFolderBaseFromPage(pageTitle, pageUrl),
+    numberedLessonSubpageFolderFromPage(pageTitle, pageUrl)
+  );
+}
+
+function bookActivityScopedDir(courseDir, pageTitle, pageUrl) {
+  return subpageActivityScopedDir(
+    courseDir,
+    bookKeyFromUrl(pageUrl),
+    bookFolderBaseFromPage(pageTitle, pageUrl),
+    numberedBookSubpageFolderFromPage(pageTitle, pageUrl)
+  );
+}
+
+function subpageActivityScopedDir(courseDir, activityKey, activityFolderBase, subpageFolder) {
+  const activityFolder = numberedRootFolder(activityKey, activityFolderBase);
+  const relativeFolder = path.join(activityFolder, subpageFolder);
   const dir = path.join(courseDir, relativeFolder);
 
   fs.mkdirSync(dir, { recursive: true });
@@ -359,6 +417,10 @@ function lessonScopedFolderFromPage(pageTitle, pageUrl) {
 function activityScopedDir(courseDir, pageTitle, pageUrl) {
   if (isLessonUrl(pageUrl)) {
     return lessonActivityScopedDir(courseDir, pageTitle, pageUrl);
+  }
+
+  if (isBookUrl(pageUrl)) {
+    return bookActivityScopedDir(courseDir, pageTitle, pageUrl);
   }
 
   const folder = numberedActivityFolderFromPage(pageTitle, pageUrl);
@@ -661,28 +723,44 @@ function activityAllowedPattern(url) {
 }
 
 function isLessonUrl(value) {
+  return isActivityTypeUrl(value, '/mod/lesson/view.php');
+}
+
+function isBookUrl(value) {
+  return isActivityTypeUrl(value, '/mod/book/view.php');
+}
+
+function isActivityTypeUrl(value, pathnamePart) {
   try {
-    return new URL(value).pathname.includes('/mod/lesson/view.php');
+    return new URL(value).pathname.includes(pathnamePart);
+  } catch {
+    return false;
+  }
+}
+
+function isSameActivityUrl(candidateValue, activityValue, pathnamePart) {
+  try {
+    const candidate = new URL(candidateValue);
+    const activity = new URL(activityValue);
+
+    return (
+      candidate.hostname === CONFIG.allowedHost &&
+      activity.hostname === CONFIG.allowedHost &&
+      candidate.pathname === activity.pathname &&
+      candidate.pathname.includes(pathnamePart) &&
+      candidate.searchParams.get('id') === activity.searchParams.get('id')
+    );
   } catch {
     return false;
   }
 }
 
 function isSameLessonUrl(candidateValue, lessonValue) {
-  try {
-    const candidate = new URL(candidateValue);
-    const lesson = new URL(lessonValue);
+  return isSameActivityUrl(candidateValue, lessonValue, '/mod/lesson/view.php');
+}
 
-    return (
-      candidate.hostname === CONFIG.allowedHost &&
-      lesson.hostname === CONFIG.allowedHost &&
-      candidate.pathname === lesson.pathname &&
-      candidate.pathname.includes('/mod/lesson/view.php') &&
-      candidate.searchParams.get('id') === lesson.searchParams.get('id')
-    );
-  } catch {
-    return false;
-  }
+function isSameBookUrl(candidateValue, bookValue) {
+  return isSameActivityUrl(candidateValue, bookValue, '/mod/book/view.php');
 }
 
 function youtubeWatchUrl(videoId) {
@@ -1084,8 +1162,12 @@ async function getPagePath(page) {
       document.body?.classList?.contains('path-mod-lesson') ||
       location.href.includes('/mod/lesson/view.php');
 
-    if (isLesson) {
-      const selectors = [
+    const isBook =
+      document.body?.classList?.contains('path-mod-book') ||
+      location.href.includes('/mod/book/view.php');
+
+    if (isLesson || isBook) {
+      const selectors = isLesson ? [
         '.lesson-content h1',
         '.lesson-content h2',
         '.contents h1',
@@ -1097,13 +1179,22 @@ async function getPagePath(page) {
         '.lessonpagetitle',
         '.lesson-page-title',
         '.mod_lesson-title',
+      ] : [
+        '.book_content h1',
+        '.book_content h2',
+        '.book_content h3',
+        '.book_content h4',
+        '.mod_book-chapter-title',
+        '#region-main .book_content h3',
+        '#region-main h3',
+        '#region-main h4',
       ];
 
       for (const selector of selectors) {
         const text = cleanText(document.querySelector(selector)?.textContent);
         if (!text) continue;
         if (text === title) continue;
-        if (/^(previous|next|continue|contents|question|response)$/i.test(text)) continue;
+        if (/^(previous|next|continue|contents|question|response|table of contents)$/i.test(text)) continue;
         if (!parts.includes(text)) parts.push(text);
         break;
       }
@@ -1159,10 +1250,18 @@ async function collectCourseLinks(page) {
 
 async function collectLessonSubpageLinks(page, lessonUrl) {
   if (!isLessonUrl(lessonUrl)) return [];
+  return collectSameActivitySubpageLinks(page, lessonUrl, isSameLessonUrl, /https?:\/\/[^'" )]+|\/moodle\/mod\/lesson\/view\.php\?[^'" )]+/gi);
+}
 
-  const currentPageKey = canonicalPageKey(lessonUrl);
+async function collectBookSubpageLinks(page, bookUrl) {
+  if (!isBookUrl(bookUrl)) return [];
+  return collectSameActivitySubpageLinks(page, bookUrl, isSameBookUrl, /https?:\/\/[^'" )]+|\/moodle\/mod\/book\/view\.php\?[^'" )]+/gi);
+}
 
-  const links = await page.evaluate(() => {
+async function collectSameActivitySubpageLinks(page, activityUrl, isSameActivityUrl, onclickUrlPattern) {
+  const currentPageKey = canonicalPageKey(activityUrl);
+
+  const links = await page.evaluate((onclickUrlPattern) => {
     function absoluteUrl(href) {
       try { return new URL(href, location.href).href; } catch { return ''; }
     }
@@ -1204,19 +1303,19 @@ async function collectLessonSubpageLinks(page, lessonUrl) {
       }
 
       const onclick = element.getAttribute('onclick') || '';
-      for (const match of onclick.matchAll(/https?:\/\/[^'" )]+|\/moodle\/mod\/lesson\/view\.php\?[^'" )]+/gi)) {
+      for (const match of onclick.matchAll(new RegExp(onclickUrlPattern, 'gi'))) {
         output.push(absoluteUrl(match[0]));
       }
     }
 
     return output.filter(Boolean);
-  });
+  }, onclickUrlPattern.source);
 
   const byKey = new Map();
 
   for (const link of links) {
     if (shouldSkipCrawlUrl(link)) continue;
-    if (!isSameLessonUrl(link, lessonUrl)) continue;
+    if (!isSameActivityUrl(link, activityUrl)) continue;
 
     const key = canonicalPageKey(link);
     if (key === currentPageKey) continue;
@@ -2341,32 +2440,36 @@ async function crawlCourse(context, page, startUrl, courseIndex, totalCourses) {
         }
       }
 
-      const lessonSubpageLinks = await collectLessonSubpageLinks(page, page.url());
-      const newLessonSubpageLinks = [];
+      const activitySubpageLinks = [
+        ...(await collectLessonSubpageLinks(page, page.url())),
+        ...(await collectBookSubpageLinks(page, page.url())),
+      ];
+      const newActivitySubpageLinks = [];
 
-      for (const link of lessonSubpageLinks) {
+      for (const link of activitySubpageLinks) {
         const key = canonicalPageKey(link);
 
         if (!seenPageKeys.has(key) && !queue.some(existing => canonicalPageKey(existing) === key)) {
-          newLessonSubpageLinks.push(link);
+          newActivitySubpageLinks.push(link);
         }
       }
 
-      for (const link of newLessonSubpageLinks.slice().reverse()) {
+      for (const link of newActivitySubpageLinks.slice().reverse()) {
         queue.unshift(link);
       }
 
-      if (lessonSubpageLinks.length > 0) {
+      if (activitySubpageLinks.length > 0) {
+        const activityType = isBookUrl(page.url()) ? 'book' : 'lesson';
         console.log(
-          `  Same-lesson subpage links found: ${lessonSubpageLinks.length}; ` +
-          `queued next: ${newLessonSubpageLinks.length}`
+          `  Same-${activityType} subpage links found: ${activitySubpageLinks.length}; ` +
+          `queued next: ${newActivitySubpageLinks.length}`
         );
       }
 
       // Do not enqueue general links discovered while processing activity pages. Only
-      // same-lesson subpages are allowed through so Moodle lesson navigation can be
-      // exhausted without letting breadcrumbs, navigation widgets, or related-course
-      // links pull the crawl into another course.
+      // same-lesson and same-book subpages are allowed through so Moodle activity
+      // navigation can be exhausted without letting breadcrumbs, navigation widgets,
+      // or related-course links pull the crawl into another course.
     } catch (error) {
       console.warn(`  Failed: ${error.message}`);
     }
