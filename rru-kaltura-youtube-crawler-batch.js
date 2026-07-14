@@ -72,6 +72,7 @@ let seenPageKeys = new Set();
 let seenDownloadUrls = new Set();
 let activityFolderNumbers = new Map();
 let nextActivityFolderNumber = 1;
+let lessonSubpageFolderNumbers = new Map();
 let CURRENT_START_COURSE_ID = '';
 
 const VIDEO_EXTENSIONS = new Set([
@@ -98,6 +99,7 @@ function resetCourseState(startUrl) {
   seenDownloadUrls = new Set();
   activityFolderNumbers = new Map();
   nextActivityFolderNumber = 1;
+  lessonSubpageFolderNumbers = new Map();
   CURRENT_START_COURSE_ID = getCourseIdFromUrl(startUrl);
 }
 
@@ -240,6 +242,16 @@ function activityFolderBaseFromPage(pageTitle, pageUrl) {
   }
 }
 
+function numberedRootFolder(key, baseFolder) {
+  if (!activityFolderNumbers.has(key)) {
+    const number = String(nextActivityFolderNumber).padStart(3, '0');
+    activityFolderNumbers.set(key, `${number} - ${baseFolder}`);
+    nextActivityFolderNumber += 1;
+  }
+
+  return activityFolderNumbers.get(key);
+}
+
 function numberedActivityFolderFromPage(pageTitle, pageUrl) {
   const baseFolder = activityFolderBaseFromPage(pageTitle, pageUrl);
 
@@ -251,13 +263,77 @@ function numberedActivityFolderFromPage(pageTitle, pageUrl) {
     key = `${baseFolder}|${pageUrl}`;
   }
 
-  if (!activityFolderNumbers.has(key)) {
-    const number = String(nextActivityFolderNumber).padStart(3, '0');
-    activityFolderNumbers.set(key, `${number} - ${baseFolder}`);
-    nextActivityFolderNumber += 1;
+  return numberedRootFolder(key, baseFolder);
+}
+
+function lessonKeyFromUrl(pageUrl) {
+  try {
+    const url = new URL(pageUrl);
+    const id = url.searchParams.get('id');
+    if (id) return `${url.origin}${url.pathname}?id=${id}`;
+  } catch {
+    // Fall through to the raw URL fallback.
   }
 
-  return activityFolderNumbers.get(key);
+  return `lesson|${pageUrl}`;
+}
+
+function lessonTitlePartsFromPage(pageTitle) {
+  return cleanText(pageTitle)
+    .split('/')
+    .map(p => p.trim())
+    .filter(Boolean);
+}
+
+function lessonFolderBaseFromPage(pageTitle, pageUrl) {
+  if (!isLessonUrl(pageUrl)) return '';
+
+  const parts = lessonTitlePartsFromPage(pageTitle);
+  const lessonName = parts.length >= 2 ? parts[parts.length - 2] : parts[parts.length - 1];
+
+  return sanitizeFolderName(lessonName || activityFolderBaseFromPage(pageTitle, pageUrl), 'lesson');
+}
+
+function lessonSubpageFolderBaseFromPage(pageTitle, pageUrl) {
+  const parts = lessonTitlePartsFromPage(pageTitle);
+  const pageName = parts[parts.length - 1];
+
+  return sanitizeFolderName(pageName || activityFolderBaseFromPage(pageTitle, pageUrl), 'lesson-page');
+}
+
+function numberedLessonSubpageFolderFromPage(pageTitle, pageUrl) {
+  const lessonKey = lessonKeyFromUrl(pageUrl);
+  const subpageKey = canonicalPageKey(pageUrl);
+  const baseFolder = lessonSubpageFolderBaseFromPage(pageTitle, pageUrl);
+
+  if (!lessonSubpageFolderNumbers.has(lessonKey)) {
+    lessonSubpageFolderNumbers.set(lessonKey, {
+      nextNumber: 1,
+      folders: new Map(),
+    });
+  }
+
+  const lessonFolders = lessonSubpageFolderNumbers.get(lessonKey);
+
+  if (!lessonFolders.folders.has(subpageKey)) {
+    const number = String(lessonFolders.nextNumber).padStart(3, '0');
+    lessonFolders.folders.set(subpageKey, `${number} - ${baseFolder}`);
+    lessonFolders.nextNumber += 1;
+  }
+
+  return lessonFolders.folders.get(subpageKey);
+}
+
+function lessonActivityScopedDir(courseDir, pageTitle, pageUrl) {
+  const lessonKey = lessonKeyFromUrl(pageUrl);
+  const lessonFolder = numberedRootFolder(lessonKey, lessonFolderBaseFromPage(pageTitle, pageUrl));
+  const subpageFolder = numberedLessonSubpageFolderFromPage(pageTitle, pageUrl);
+  const relativeFolder = path.join(lessonFolder, subpageFolder);
+  const dir = path.join(courseDir, relativeFolder);
+
+  fs.mkdirSync(dir, { recursive: true });
+
+  return { dir, folder: relativeFolder };
 }
 
 function lessonScopedFolderFromPage(pageTitle, pageUrl) {
@@ -279,6 +355,10 @@ function lessonScopedFolderFromPage(pageTitle, pageUrl) {
 }
 
 function activityScopedDir(courseDir, pageTitle, pageUrl) {
+  if (isLessonUrl(pageUrl)) {
+    return lessonActivityScopedDir(courseDir, pageTitle, pageUrl);
+  }
+
   const folder = numberedActivityFolderFromPage(pageTitle, pageUrl);
   const lessonFolder = lessonScopedFolderFromPage(pageTitle, pageUrl);
   const relativeFolder = lessonFolder ? path.join(lessonFolder, folder) : folder;
@@ -2090,7 +2170,7 @@ async function crawlCourse(context, page, startUrl, courseIndex, totalCourses) {
       seenPageKeys.add(currentPageKey);
 
       const pageTitle = await getPagePath(page);
-      const activityFolder = activityFolderBaseFromPage(pageTitle, page.url());
+      const { folder: activityFolder } = activityScopedDir(courseDir, pageTitle, page.url());
       const iframes = await collectIframesFromPage(page);
       const downloadLinks = await collectRoyalRoadsDownloadLinksFromPage(page);
 
