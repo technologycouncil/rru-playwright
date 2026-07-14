@@ -44,19 +44,23 @@ function getArgValue(flagName, fallback = '') {
 
 if (!INPUT) {
   console.error(
-    'Usage: node rru-kaltura-youtube-crawler-batch.js <course-url-or-csv-file> [--headed] [--output "/path/to/output"] [--max-pages 2000]'
+    'Usage: node rru-kaltura-youtube-crawler-batch.js <course-url-or-csv-file> [--headed] [--output "/path/to/output"] [--max-pages 2000] [--download-concurrency 4]'
   );
   process.exit(1);
 }
 
 const OUTPUT_DIR = getArgValue('--output', path.join(__dirname, 'output'));
 const MAX_PAGES_ARG = Number(getArgValue('--max-pages', '2000'));
+const DOWNLOAD_CONCURRENCY_ARG = Number(getArgValue('--download-concurrency', '4'));
 
 const CONFIG = {
   userDataDir: path.join(__dirname, 'rru-browser-profile'),
   outputRootDir: path.resolve(OUTPUT_DIR),
   crawlDelayMs: 50,
   maxPages: Number.isFinite(MAX_PAGES_ARG) && MAX_PAGES_ARG > 0 ? MAX_PAGES_ARG : 2000,
+  downloadConcurrency: Number.isFinite(DOWNLOAD_CONCURRENCY_ARG) && DOWNLOAD_CONCURRENCY_ARG > 0
+    ? Math.floor(DOWNLOAD_CONCURRENCY_ARG)
+    : 4,
 
   allowedHost: 'csonline.royalroads.ca',
   mediaHost: 'media.royalroads.ca',
@@ -70,6 +74,7 @@ const CONFIG = {
 
 let results = [];
 let seenRecords = new Set();
+let resultIndexByKey = new Map();
 let seenPageKeys = new Set();
 let seenDownloadUrls = new Set();
 let activityFolderNumbers = new Map();
@@ -98,6 +103,7 @@ const IGNORABLE_DOWNLOAD_ERRORS = new Set([
 function resetCourseState(startUrl) {
   results = [];
   seenRecords = new Set();
+  resultIndexByKey = new Map();
   seenPageKeys = new Set();
   seenDownloadUrls = new Set();
   activityFolderNumbers = new Map();
@@ -906,7 +912,8 @@ function addResult(record) {
   if (!record.url) return false;
 
   const key = `${record.type}|${normalizeUrl(record.url)}|${normalizeUrl(record.pageUrl)}`;
-  const existing = results.find(item => `${item.type}|${normalizeUrl(item.url)}|${normalizeUrl(item.pageUrl)}` === key);
+  const existingIndex = resultIndexByKey.get(key);
+  const existing = existingIndex === undefined ? null : results[existingIndex];
 
   if (existing) {
     if (!existing.youtubeUrl && record.youtubeUrl) existing.youtubeUrl = record.youtubeUrl;
@@ -918,6 +925,8 @@ function addResult(record) {
 
   if (seenRecords.has(key)) return false;
   seenRecords.add(key);
+
+  resultIndexByKey.set(key, results.length);
 
   results.push({
     type: record.type || 'unknown',
@@ -2103,6 +2112,29 @@ async function downloadKalturaVideo(context, iframeUrl, pageTitle, alt, courseDi
   }
 }
 
+
+async function mapWithConcurrency(items, concurrency, mapper) {
+  const limit = Math.max(1, Math.floor(concurrency || 1));
+  const mapped = new Array(items.length);
+  let nextIndex = 0;
+
+  async function worker() {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      mapped[index] = await mapper(items[index], index);
+    }
+  }
+
+  const workers = Array.from(
+    { length: Math.min(limit, items.length) },
+    () => worker()
+  );
+
+  await Promise.all(workers);
+  return mapped;
+}
+
 async function downloadRoyalRoadsUrlByRequest(context, downloadUrl, pageTitle, label, courseDir, pageUrl) {
   if (isM3u8Url(downloadUrl)) {
     return {
@@ -2315,40 +2347,50 @@ async function crawlCourse(context, page, startUrl, courseIndex, totalCourses) {
       console.log(`  Highlighted csonline.royalroads.ca iframes found: ${iframes.length}`);
       console.log(`  Royal Roads image/link download candidates found: ${downloadLinks.length}`);
 
-      for (const media of downloadLinks) {
-        if (!isRoyalRoadsDownloadableUrl(media.url)) continue;
-        if (isSvgUrl(media.url)) continue;
-        if (isM3u8Url(media.url)) continue;
-        if (isMoodlePageUrl(media.url)) continue;
+      const currentPageUrl = page.url();
+      const downloadableLinks = downloadLinks.filter(media => {
+        if (!isRoyalRoadsDownloadableUrl(media.url)) return false;
+        if (isSvgUrl(media.url)) return false;
+        if (isM3u8Url(media.url)) return false;
+        if (isMoodlePageUrl(media.url)) return false;
 
         if (
           media.url.includes('/filter/kaltura/') ||
           media.url.includes('kaf.moodle.royalroads.ca')
         ) {
-          continue;
+          return false;
         }
 
         if (shouldSkipCrawlUrl(media.url) && !isMediaRoyalRoadsUrl(media.url)) {
-          if (
-            !media.url.includes('/pluginfile.php/') &&
-            !media.url.includes('/webservice/pluginfile.php/') &&
-            !media.url.includes('/draftfile.php/') &&
-            !media.url.includes('/mod/resource/view.php') &&
-            !media.url.includes('/mod/url/view.php')
-          ) {
-            continue;
-          }
+          return (
+            media.url.includes('/pluginfile.php/') ||
+            media.url.includes('/webservice/pluginfile.php/') ||
+            media.url.includes('/draftfile.php/') ||
+            media.url.includes('/mod/resource/view.php') ||
+            media.url.includes('/mod/url/view.php')
+          );
         }
 
-        const downloadResult = await downloadRoyalRoadsUrlByRequest(
-          context,
-          media.url,
-          pageTitle,
-          media.label,
-          courseDir,
-          page.url()
-        );
+        return true;
+      });
 
+      const downloadResults = await mapWithConcurrency(
+        downloadableLinks,
+        CONFIG.downloadConcurrency,
+        async media => ({
+          media,
+          downloadResult: await downloadRoyalRoadsUrlByRequest(
+            context,
+            media.url,
+            pageTitle,
+            media.label,
+            courseDir,
+            currentPageUrl
+          ),
+        })
+      );
+
+      for (const { media, downloadResult } of downloadResults) {
         if (shouldRecordDownloadResult(downloadResult)) {
           addResult({
             type: isVideoUrl(media.url) || isLikelyVideoFilename(downloadResult.downloadedFile) ? 'direct_video' : (media.source === 'a[href]' ? 'direct_link' : 'direct_media'),
@@ -2357,7 +2399,7 @@ async function crawlCourse(context, page, startUrl, courseIndex, totalCourses) {
             downloadedPath: downloadResult.downloadedPath,
             downloadError: downloadResult.downloadError,
             pageTitle,
-            pageUrl: page.url(),
+            pageUrl: currentPageUrl,
             alt: media.label,
           });
         }
@@ -2573,6 +2615,7 @@ async function main() {
   console.log(`Courses to process: ${courseUrls.length}`);
   console.log(`Output root: ${CONFIG.outputRootDir}`);
   console.log(`Max pages per course: ${CONFIG.maxPages}`);
+  console.log(`Download concurrency: ${CONFIG.downloadConcurrency}`);
 
   const context = await chromium.launchPersistentContext(CONFIG.userDataDir, {
     headless: HEADLESS,
